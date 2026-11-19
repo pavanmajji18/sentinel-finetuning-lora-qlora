@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
 
 # Virtual environments
 .venv/
@@ -12,6 +13,18 @@ venv/
 .env
 .env.*
 !.env.example
+
+# Large data files and directories
+data/
+*.parquet
+*.jsonl.gz
+
+# Model weights & training outputs
+output/
+*.pt
+*.bin
+*.safetensors
+*.onnx
 
 # IDE & OS files
 .DS_Store

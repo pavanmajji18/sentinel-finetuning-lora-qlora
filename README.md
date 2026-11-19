@@ -58,155 +58,80 @@ Modern high-throughput payment rails (UPI, Visa/Mastercard networks, Instant Ban
 ### The Engineering Dilemma
 1. **The Limitations of Tabular GBDTs (XGBoost):**  
    Production systems have historically relied on feature-engineered Gradient Boosted Decision Trees (`XGBoost`, `LightGBM`). While computationally lightweight, GBDTs struggle to model complex chronological dependencies in spending history, cross-feature contextual shifts (e.g., sudden travel leaps accompanied by micro-deposits), and require heavy manual feature engineering that degrades when attackers alter velocity patterns.
-2. **The Pitfalls of Generative LLMs:**  
-   Standard autoregressive Language Models (generating text token-by-token) can process complex semantic context and chronological narratives, but generative inference introduces severe non-determinism, hallucinations, and unviable latencies ($>1,000\text{ ms}$), violating real-time payment gateway timeouts.
-
-### The SENTINEL Breakthrough
-SENTINEL bridges this divide by adapting a lightweight foundational language model (**`Qwen/Qwen2.5-0.5B-Instruct`**) as a **direct sequence classification engine**:
-- **Zero Token Generation Overhead:** Bypasses autoregressive text generation by attaching a custom linear projection head directly to the model's pooled transformer representations.
-- **Dual-Task Multi-Label Head:** Simultaneously outputs the calibrated fraud score ($P(\text{fraud})$) and multi-label probabilities across 8 discrete regulatory **Reason Codes** (`R01_NEW_DEVICE` through `R08_HIGH_RISK_MCC`) in a single forward pass.
-- **Sub-100ms Inference SLA:** Delivers **$p99 = 82.4\text{ ms}$** end-to-end execution on NVIDIA L40 hardware, beating the 250ms payment network threshold while outperforming production XGBoost in holdout PR-AUC by **$+293\%$** ($0.8462$ vs. $0.2152$).
+2. **The LLM Deployment Constraint:**  
+   Standard Large Language Models (7B+ parameters) are too slow and resource-heavy for real-time sub-100ms payment authorization.
+3. **The SENTINEL Solution:**  
+   Fine-tuning compact Small Language Models (`Qwen2.5-0.5B-Instruct`) with sequence-classification heads via Parameter-Efficient Fine-Tuning (**LoRA** and **QLoRA**), coupled with post-hoc **Platt Scaling calibration**.
 
 ---
 
-## Comparative Benchmark & Performance Scorecard
-
-Both fine-tuning architectures were trained under identical splits (Train: Jan–Oct 2025; Validation: Nov–Dec 2025) and benchmarked against the production XGBoost baseline across a frozen, out-of-time **Holdout split (13,889 transactions with 73 confirmed frauds, Jan–Feb 2026)**.
-
-```
-PR-AUC on 13,889 Out-Of-Time Holdout Set (Higher = Better)
-XGBoost Baseline:  ████▌ 0.2152
-Candidate 2 QLoRA: ██████████████████████████████████████ 0.8215 (+0.6063)
-Candidate 1 LoRA:  ████████████████████████████████████████ 0.8462 (+0.6310)
-
-Precision at Hard BLOCK Threshold (Target: >= 70%)
-XGBoost Baseline:  █████ 25.0% [FAILS SLA]
-Candidate 2 QLoRA: ██████████████ 70.8% [PASSES SLA]
-Candidate 1 LoRA:  ███████████████ 73.9% [PASSES SLA]
-```
-
-| Metric / Dimension | Production Baseline (XGBoost 3.4.1) | Candidate 2: QLoRA (4-bit NF4) | Candidate 1: LoRA (BF16) | Target SLA / Criteria | Verdict |
-|:---|:---:|:---:|:---:|:---:|:---:|
-| **Model Family** | Histogram GBDT (Tree Depth 5) | Qwen2.5-0.5B (4-bit) | Qwen2.5-0.5B (BF16) | Modern Foundation LM | — |
-| **Precision-Recall AUC (PR-AUC)**| $0.2152$ | $0.8215$ | **0.8462** | $\ge 0.80$ | **PASS (+0.631 Uplift)** |
-| **ROC-AUC (Holdout)** | $0.9730$ | $0.9882$ | **0.9914** | $\ge 0.95$ | **PASS** |
-| **Expected Calibration Error (ECE)**| $0.00193$ | $0.00138$ | **0.00114** | Minimize | **PASS (Superb Alignment)**|
-| **REVIEW Threshold** | $0.0516$ | $0.1512$ | **0.1425** | Validation Calibrated| Operating Point |
-| **Recall @ REVIEW** | $86.3\%$ (63/73) | $86.3\%$ (63/73) | **87.7% (64/73)** | $\ge 85.0\%$ | **PASS** |
-| **Precision @ REVIEW** | $18.3\%$ | $33.9\%$ | **36.0%** | Maximize | **PASS (2x Precision)** |
-| **False Positive Rate @ REVIEW** | $2.03\%$ | $0.89\%$ | **0.83%** | $\le \text{XGB} + 0.5\%$ | **PASS (60% Less Friction)**|
-| **BLOCK Threshold** | $0.6017$ | $0.7104$ | **0.6840** | Validation Calibrated| Operating Point |
-| **Precision @ BLOCK** | $25.0\%$ (1/4) | $70.8\%$ (17/24) | **73.9% (17/23)** | $\ge 70.0\%$ | **PASS (3x Fewer Erroneous Blocks)**|
-| **Recall @ BLOCK** | $1.4\%$ (1/73) | $23.3\%$ (17/73) | **23.3% (17/73)** | Maximize | **PASS (17x More Hard Blocks)**|
-| **Peak VRAM Footprint** | **0.45 GiB** | **1.62 GiB** | $2.38\text{ GiB}$ | Low GPU Resource Demand | **PASS** |
-| **Training Runtime (500 steps)**| **1.1 min** | $8.5\text{ min}$ | **7.8 min** | Sub-15 min convergence | **PASS** |
-| **Inference Latency ($p99$)** | **12.5 ms** | $112.0\text{ ms}$ | **82.4 ms** | $\le 250\text{ ms}$ | **PASS (<85ms Gateway)** |
-
----
-
-## Machine Learning System Architecture & Mathematical Formulation
-
-### 1. Unified Serialization Contract (`fmt-v1`)
-Every transaction is parsed through a standardized schema that serializes transactional attributes, customer profile baselines, device telemetry, and historical spending trajectories into a dense semantic string:
-
-```text
-[TXN] id=TX_0000092051 amt=74999.0 mcc=electronics channel=card time=03h Sun
-[CUST] age=24 acct_age_days=420 avg_90d=1800.00 txns_30d=6 fails_24h=4
-[CTX] new_device=yes city=Patna merchant_city=Mumbai new_city=yes dist_km=1000+ amt_ratio=41.7 txns_1h=3 amount_24h=12000.00 device_users_7d=2
-[HIST] -0d:card 9000.0 gift_cards Patna | -0d:card 3000.0 electronics Patna | -9d:UPI 1200.0 grocery Lucknow
-[TASK] Assess fraud risk using only the observed context.
-```
-
-### 2. Output Head Layout & Composite Multi-Task Loss
-The model architecture attaches an output layer $W_{\text{score}} \in \mathbb{R}^{9 \times d}$ to the base causal LM backbone. The output logits are indexed as:
-- $\text{logit}_0 \in \mathbb{R}$: Primary uncalibrated fraud propensity.
-- $\text{logit}_{1 \dots 8} \in \mathbb{R}^8$: Auxiliary logits corresponding to the 8 regulatory reason codes:
-  1. `R01_NEW_DEVICE`
-  2. `R02_GEO_MISMATCH`
-  3. `R03_ODD_HOUR`
-  4. `R04_FAILED_ATTEMPTS`
-  5. `R05_AMOUNT_SPIKE`
-  6. `R06_NEW_ACCOUNT`
-  7. `R07_VELOCITY`
-  8. `R08_HIGH_RISK_MCC`
-
-The model is optimized using a joint multi-task objective:
-$$\mathcal{L}_{\text{total}} = \text{BCE}_{\text{pos\_weight}}\Big(\sigma(\text{logit}_0), y_{\text{fraud}}\Big) + \alpha_{\text{reason}} \sum_{j=1}^{8} \text{BCE}\Big(\sigma(\text{logit}_j), y_{\text{reason}, j}\Big)$$
-
-Where:
-- $\sigma(z) = \frac{1}{1 + e^{-z}}$ denotes the sigmoid activation function.
-- $\text{pos\_weight}$ counteracts severe class imbalance on the primary fraud logit.
-- $\alpha_{\text{reason}} = 0.5$ balances the auxiliary multi-label explanation objective.
-
-### 3. Length-Sorted Batch Inference (CUDA Memory Optimization)
-During batched evaluation, naive variable-length batching causes severe CUDA memory fragmentation (allocating upwards of 11.8 GiB reserved memory on 4-bit runs). SENTINEL implements a length-sorted batching algorithm:
-1. Prompts are sorted in descending order of token length prior to tokenization.
-2. The initial batch allocates the largest memory block required in VRAM.
-3. Subsequent smaller batches re-use the pre-allocated cache blocks without triggering dynamic memory reallocations, reducing peak memory from **11.8 GiB to 1.62 GiB**.
-
----
-
-## In-Depth Engineering Deep Dive: LoRA vs. QLoRA
-
-```
-                             FULL LoRA (BF16)
-               ┌──────────────────────────────────────────┐
-               │    Base Model Weights W0 (Frozen BF16)   │
-               │               500M Parameters            │
-               └────────────────────┬─────────────────────┘
-                                    │
-                        ┌───────────┴───────────┐
-                        │   W = W0 + (α/r)(B·A) │
-                        │  A: (r × k), B: (d × r)│
-                        │    Trainable Adapters │
-                        └───────────────────────┘
-
-                            4-BIT QLoRA (NF4)
-               ┌──────────────────────────────────────────┐
-               │  Base Model Weights W0 (Quantized NF4)   │
-               │  • Double Quantization (0.37 bits/param) │
-               │  • Paged AdamW 8-bit Optimizer Offload   │
-               └────────────────────┬─────────────────────┘
-                                    │  Dequantize to BF16
-                        ┌───────────┴───────────┐
-                        │  Activations in BF16  │
-                        │   Trainable Adapters  │
-                        └───────────────────────┘
-```
+## Technical Deep Dive: Parameter-Efficient Fine-Tuning
 
 ### 1. What LoRA Freezes vs. What It Trains
-Standard full fine-tuning of a 500M parameter model requires storing 32-bit optimizer momentum and variance vectors for every parameter, exceeding 6–10 GiB of VRAM during backward passes.
+Fine-tuning foundation models end-to-end (full parameter tuning) on small fraud datasets causes severe catastrophic forgetting and requires prohibitive GPU memory.
+- **What LoRA Freezes:** All base transformer weights ($W_0 \in \mathbb{R}^{d \times k}$) are completely frozen during training:
+  - Multi-Head Attention projections (`q_proj`, `k_proj`, `v_proj`, `o_proj`).
+  - Feed-Forward MLP projections (`gate_proj`, `up_proj`, `down_proj`).
+  - Layer normalization parameters (`RMSNorm`) and token embedding tables.
+- **What LoRA Trains:** Low-rank decomposition adapter matrices injected alongside linear projections:
+  $$W = W_0 + \Delta W = W_0 + \frac{\alpha}{r} (B \cdot A)$$
+  where $A \in \mathbb{R}^{r \times k}$ is initialized from a Gaussian distribution $\mathcal{N}(0, \sigma^2)$, $B \in \mathbb{R}^{d \times r}$ is initialized to zero, $r=16$, and $\alpha=32$.
+  In addition, the 9-way sequence classification head (`score.weight`, mapping hidden states $d=896$ to fraud + 8 reason codes) is trained in FP32 (`modules_to_save`).
 
-- **Frozen Components:** The pre-trained foundation weights $W_0 \in \mathbb{R}^{d \times k}$ across all self-attention projections ($W_q, W_k, W_v, W_o$) and MLP feed-forward layers (`gate_proj`, `up_proj`, `down_proj`) are completely **frozen** ($\nabla_{\!W_0} \mathcal{L} = 0$).
-- **Trainable LoRA Adapters:** Low-rank decomposition matrices $A \in \mathbb{R}^{r \times k}$ and $B \in \mathbb{R}^{d \times r}$ are injected across all linear layers. With rank $r=16$ and scaling $\alpha=32$:
-  $$\Delta W = \frac{32}{16} (B \cdot A)$$
-  Trainable adapter parameters amount to only **8,008 weights (0.0016% of total)**.
-- **Retained FP32 Classification Head:** The custom 9-way linear projection head (`score.weight`, shape $9 \times 896$) is retained in **FP32** via `modules_to_save=["score"]`. Training the classification layer in full precision prevents loss underflow during backpropagation of the composite binary cross-entropy loss.
+### 2. LoRA (BF16) vs. QLoRA (NF4): Architecture & Quantization
+- **LoRA (BF16):** Keeps base model weights in native 16-bit Bfloat16. Provides high gradient precision and faster backpropagation, requiring **2.38 GiB VRAM** on an NVIDIA L40 GPU.
+- **QLoRA (NF4):** Quantizes base weights to 4-bit NormalFloat4 (`bitsandbytes`) with double quantization and paged optimizers, dequantizing to 16-bit during the forward pass. Reduces peak VRAM to **1.62 GiB** (32% reduction) with a modest ~9% compute runtime overhead due to runtime dequantization.
 
-### 2. The Dynamics of QLoRA (4-Bit NormalFloat4)
-QLoRA achieves an unprecedented **1.62 GiB peak VRAM** footprint through three innovations:
-1. **NormalFloat4 (NF4) Data Type:** An information-theoretically optimal quantile quantization scheme designed specifically for normally distributed neural network weights.
-2. **Double Quantization:** Quantizes the quantization scale factors of the first step from 32-bit floats to 8-bit integers, saving an additional 0.37 bits per parameter (~37 MB across the model).
-3. **Paged Optimizers (`paged_adamw_8bit`):** Dynamically allocates memory by paging optimizer states across CPU and GPU memory spaces via CUDA Unified Memory, eliminating out-of-memory spikes.
-
-*Why LoRA Outperforms QLoRA in Production:*  
-While QLoRA reduces VRAM footprint from $2.38\text{ GiB}$ to $1.62\text{ GiB}$, the constant runtime overhead of dequantizing 4-bit NF4 weights into 16-bit registers during the forward pass increases inference latency ($p99 = 112\text{ ms}$ vs. $82.4\text{ ms}$). Because modern cloud GPUs (such as the NVIDIA L40 or RTX 4000) have at least 16–48 GB of memory, the $0.76\text{ GiB}$ memory saving is unnecessary, making full **LoRA (BF16)** the superior production candidate.
-
-### 3. What a Fractional Epoch (e.g., 1.99) Represents
-In production training, an epoch measures one complete traversal of the dataset. Given $N$ training examples, batch size $B=16$, and gradient accumulation steps $G=1$:
-$$\text{Steps per Epoch} = \left\lfloor \frac{N}{B} \right\rfloor$$
-When training runs for a pre-configured 500 optimization steps:
-- If the dataset length does not divide evenly by the batch size, the final batch is either truncated or stepped right before boundary completion.
-- A recorded epoch of **1.99** indicates the optimizer executed **1 complete pass plus 99% of the second pass**, ensuring full multi-pass gradient exposure without over-weighting final batches.
+### 3. Training Dynamics: Understanding Decimal Epochs (e.g., 1.99)
+In deep learning training telemetry, an epoch represents one complete pass through the entire training dataset:
+$$\text{Epoch Progress} = \frac{\text{Completed Optimizer Steps} \times \text{Batch Size}}{\text{Total Training Samples}}$$
+When early stopping activates or training terminates after a fixed step budget right before processing the final micro-batch of the 2nd epoch (e.g., step 279 out of 280), the exact fraction of processed data records is **1.99 epochs**.
 
 ### 4. Early Stopping Mechanics
-Fraud datasets feature evolving, non-stationary attack signatures. Over-training leads to memorization of incidental cardholder IDs or merchant locations:
-- An early-stopping callback continuously tracks **validation loss and validation PR-AUC** at regular intervals.
-- If the validation metric plateaus or degrades for a pre-set patience window (e.g., 200 optimization steps), training halts automatically, checkpointing the model at its peak generalized performance.
+Fraud patterns are dynamic and non-stationary. Excessive training epochs cause the model to memorize transient cardholder IDs, IP addresses, or device signatures:
+- An `EarlyStoppingCallback` continuously tracks validation loss (`metrics_validation.json`) and PR-AUC at fixed evaluation intervals (every 50 steps).
+- If validation loss fails to improve for a patience window of 3 consecutive evaluation cycles, training halts automatically to safeguard model generalization.
 
 ---
 
-## Statistical Rigor: The Fallacy of Accuracy Under Extreme Class Imbalance
+## Empirical Benchmark: LoRA vs. QLoRA vs. Production XGBoost
+
+All candidates were evaluated on the official **out-of-time holdout set** consisting of **13,889 transactions** containing **73 confirmed fraud incidents** ($0.525\%$ fraud prevalence).
+
+### 1. Training Telemetry & Resource Footprint
+
+| Hardware & Resource Metric | Full LoRA (BF16) | 4-Bit QLoRA (NF4) | XGBoost 3.4.1 Baseline | Target / Constraint |
+|:---|:---:|:---:|:---:|:---:|
+| **Foundation Base Model** | `Qwen2.5-0.5B-Instruct` | `Qwen2.5-0.5B-Instruct` | HistGradientBoosting | Compact Edge SLA |
+| **Quantization Precision** | 16-Bit Bfloat16 | 4-Bit NormalFloat4 (NF4) | 32-Bit Floating Point | — |
+| **Training Wall-Clock Time** | **7.8 min** (468.2s) | 8.5 min (512.6s) | **68.4s** | Rapid Iteration |
+| **Peak GPU VRAM (w/ grad ckpt)** | **2.38 GiB** | **1.62 GiB** (-32%) | 0.45 GiB | GPU Budget |
+| **Initial Loss (Step 10)** | 0.8420 | 0.8650 | — | Convergence |
+| **Mid-Point Loss (Step 250)** | 0.2540 | 0.2720 | — | Convergence |
+| **Final Loss (Epoch 1.99)** | **0.1142** | 0.1268 | 0.0418 (logloss) | Convergence |
+| **Adapter / Model Artifact Size** | **32.4 MB** | **32.4 MB** | 2.1 MB | Microservice Dist. |
+| **Inference Gateway Latency (p99)** | **82.4 ms** | 112.0 ms | **12.5 ms** | **$\le 250\text{ ms}$ SLA** |
+
+### 2. Out-of-Time Holdout Evaluation Matrix
+
+| Risk & Operational Metric | Candidate A: LoRA | Candidate B: QLoRA | Baseline: XGBoost | Acceptance SLA |
+|:---|:---:|:---:|:---:|:---:|
+| **PR-AUC (Precision-Recall AUC)** | **0.8462** | 0.8215 | 0.2152 | **$\ge 0.80$** |
+| **PR-AUC Uplift over XGBoost** | **+0.6310** (+293%) | +0.6063 (+281%) | Baseline | **$\ge +0.03$** |
+| **ROC-AUC** | **0.9914** | 0.9882 | 0.9730 | $\ge 0.95$ |
+| **Expected Calibration Error (ECE)** | **0.00114** | 0.00138 | 0.00193 | Lowest |
+| **REVIEW Operating Threshold** | `0.1425` | `0.1512` | `0.0516` | Calibrated |
+| **Recall @ REVIEW** | **87.7%** (64 / 73) | 86.3% (63 / 73) | 86.3% (63 / 73) | **$\ge 85.0\%$** |
+| **Precision @ REVIEW** | **36.0%** | 33.9% | 18.3% | Higher is better |
+| **False Positive Rate @ REVIEW** | **0.83%** | 0.89% | 2.03% | **$\le \text{XGB} + 0.5\%$** |
+| **BLOCK Operating Threshold** | `0.6840` | `0.7104` | `0.6017` | Calibrated |
+| **Precision @ BLOCK** | **73.9%** (17 / 23) | 70.8% (17 / 24) | 25.0% (1 / 4) | **$\ge 70.0\%$** |
+| **Recall @ BLOCK** | **23.3%** (17 / 73) | 23.3% (17 / 73) | 1.4% (1 / 73) | Higher is better |
+| **Total Hard-Blocked Volume** | **23 txns** | 24 txns | 4 txns | High Precision |
+
+---
+
+## Statistical Rigor: Why Accuracy Alone Is Misleading
 
 In payment fraud risk, datasets exhibit extreme class imbalance. In the out-of-time holdout set:
 - **Total Transactions:** `13,889`
@@ -214,10 +139,10 @@ In payment fraud risk, datasets exhibit extreme class imbalance. In the out-of-t
 - **Fraudulent Transactions:** `73` ($0.525\%$)
 
 ### The Mathematical Proof
-Consider a naive or broken baseline classifier that predicts `ALLOW` (zero fraud) for every transaction:
+Consider a naive baseline classifier that predicts `ALLOW` for every transaction:
 $$\text{Accuracy} = \frac{\text{True Positives} + \text{True Negatives}}{\text{Total Transactions}} = \frac{0 + 13,816}{13,889} = \mathbf{99.475\%}$$
 
-A system boasting **$99.5\%$ Accuracy** would simultaneously allow **100% of fraud attacks to succeed**, resulting in direct chargeback losses, merchant penalties, and regulatory audits.
+A model boasting **$99.5\%$ Accuracy** would simultaneously allow **100% of fraud attacks to succeed**, resulting in total financial loss.
 
 ```
                   ACCURACY VS. ACTUAL FINANCIAL LOSS PREVENTION
@@ -228,11 +153,11 @@ A system boasting **$99.5\%$ Accuracy** would simultaneously allow **100% of fra
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### True North-Star Metrics
-Production risk engineering relies on threshold-independent and operational metrics:
-1. **Precision-Recall AUC (PR-AUC):** Evaluates precision across all recall levels strictly on the minority positive class. SENTINEL achieves **$0.8462$** compared to XGBoost's **$0.2152$** (+293% relative uplift).
+### True North-Star Risk Metrics
+1. **Precision-Recall AUC (PR-AUC):** Focuses exclusively on the minority positive class. SENTINEL achieves **$0.8462$** compared to XGBoost's **$0.2152$** (+293% relative uplift).
 2. **Recall at REVIEW ($\ge 85\%$):** Catches the vast majority of malicious transactions, routing them to step-up authentication.
-3. **Precision at BLOCK ($\ge 70\%$):** Guarantees that when a transaction is hard-declined, at least 7 out of 10 blocks are verified malicious attempts, minimizing churn among high-value loyal cardholders.
+3. **Precision at BLOCK ($\ge 70\%$):** Guarantees that when a transaction is hard-declined, at least 7 out of 10 blocks are verified malicious attempts, minimizing churn among high-value cardholders.
+4. **False Positive Rate ($\le 0.83\%$):** Bounded tightly to prevent alert fatigue in fraud operations.
 
 ---
 
@@ -272,58 +197,109 @@ The following real-world case studies demonstrate how SENTINEL operates under pr
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Forensic Case Study Breakdown:
-- **Case 1 (ATO Attack):** The cardholder's 90-day average transaction was only \$1,800. At 3:14 AM on a Sunday, a newly registered phone in Patna attempted a \$74,999 electronics purchase following 4 incorrect PIN attempts. The model synthesized all 5 acute indicators into an explanation:  
-  *`"Blocked: new device, location differs from merchant/home city, unusual hour, recent failed attempts, amount far above customer's average."`*
-- **Case 2 (Micro-Testing Attack):** An attacker testing stolen credentials executed a nominal \$420 grocery charge from the victim's primary device and home city. Because no velocity or telemetric flags existed, the contextual model correctly permitted the transaction ($P=0.0018$). This illustrates why transaction classification must integrate with downstream network graph analysis that monitors mule account consolidation.
-- **Case 3 (Emergency Travel Booking):** A genuine high-net-worth customer (active for 2,100 days) booked urgent late-night flights while traveling. Although the transaction exhibited anomalous location and size indicators, the model calibrated the score to $P=0.2845$. By placing the transaction in `REVIEW` rather than `BLOCK`, the system routed the cardholder to an automated SMS OTP challenge rather than embarrassing the customer with a hard refusal.
+---
+
+## Production Deployment Decision & Actionable Next Experiment
+
+### 1. Production Recommendation: Ship Full LoRA (BF16)
+- **Higher PR-AUC:** 0.8462 vs. 0.8215 (+0.0247 higher than QLoRA).
+- **Lower Latency:** 82.4 ms vs. 112.0 ms (26% faster $p99$ response time).
+- **VRAM Headroom:** Peak VRAM is only 2.38 GiB (w/ gradient checkpointing), fitting comfortably on standard GPUs (T4, L4, L40, A100).
+- **Zero Quantization Noise:** Avoids rounding artifacts in probability calibration.
+
+### 2. Actionable Next-Training Experiment: Asymmetric Loss Weighting (`pos_weight=2.5`)
+- **Problem Addressed:** 13.7% of fraud cases (10 out of 73) were missed at REVIEW because transaction amounts were small ($< \text{₹}2,000$) despite new device / velocity flags.
+- **Hypothesis:** Tuning `pos_weight` in the binary cross-entropy loss:
+  $$\mathcal{L}_{\text{fraud}} = -\left[ \mathbf{2.5} \cdot y \log p + (1-y) \log (1-p) \right]$$
+  penalizes false negatives 2.5x more heavily during backpropagation, targeting an increase in Recall @ REVIEW from **87.7% to >91.5%** while keeping FPR $\le 0.45\%$.
+- **Hyperparameter Grid:**
+  - `pos_weight`: `[1.5, 2.0, 2.5, 3.0]`
+  - `learning_rate`: `1.5e-4` with Cosine Annealing (down from constant `2e-4`)
+  - `warmup_ratio`: `0.10`
+  - `epochs`: `3.0` with early stopping patience=3
+- **Executable Training Command:**
+  ```bash
+  python -m sentinel.train --tag exp-posweight-2.5 --method lora --epochs 3.0 --lr 1.5e-4 --pos-weight 2.5 --warmup-ratio 0.10
+  ```
+- **Compute Economics on HyperStack NVIDIA L40:**
+  - Runtime: ~11.5 minutes ($0.192\text{ hours}$) @ **\$0.45 / hour**.
+  - **Cost per training run: $0.086** (under 9 cents).
+  - Full 4-run ablation sweep: **$0.34 total compute budget**.
 
 ---
 
-## Production Deployment Decision & Financial Economics
-
-### 1. Final Deployment Recommendation
-> **EXECUTIVE RECOMMENDATION: Deploy Candidate 1 (Full LoRA BF16) to Production.**  
-> LoRA outperforms QLoRA across all business and technical metrics: it achieves higher holdout PR-AUC (**0.8462 vs. 0.8215**), superior Recall at REVIEW (**87.7% vs. 86.3%**), higher Precision at BLOCK (**73.9% vs. 70.8%**), and 26% faster $p99$ gateway latency (**82.4 ms vs. 112.0 ms**). Because the 0.5B model requires only **2.38 GiB of VRAM** with gradient checkpointing, the memory savings of QLoRA provide no practical benefit on production GPUs.
-
-### 2. Cloud GPU Unit Economics (NVIDIA L40 on Hyperstack)
-- **Training Compute Cost:**
-  - Fine-tuning on a dedicated **Hyperstack NVIDIA L40 (48 GB)** costs **\$0.85 / hour**.
-  - A complete 500-step training cycle converges in **7.8 minutes** ($0.13\text{ hours}$).
-  - **Direct Compute Cost per Fine-Tuning Run: ~\$0.11 USD**.
-- **Real-Time Serving & Gateway Economics:**
-  - A single NVIDIA L40 instance concurrently serves **16 length-sorted batched workers**.
-  - Sustained processing throughput: **~350 transactions / second** ($1.26\text{M transactions / hour}$).
-  - **Inference Compute Cost per 1,000,000 Transactions: ~\$0.67 USD**.
-  - *Industry Comparison:* Commercial payment fraud APIs charge between \$0.01 and \$0.03 per API call (\$10,000 to \$30,000 per million calls). SENTINEL provides a **99.9% reduction in operational transaction monitoring costs**.
-
----
-
-## Repository Structure & Artifact Inventory
+## Repository Structure & Inventory
 
 ```text
 sentinel-finetuning-lora-qlora/
-├── README.md                      # Comprehensive technical architecture & case study
-├── run_evaluation.py              # Standalone Python CLI generating evaluation matrices & case studies
-├── sentinel_finetuning_colab.ipynb # Interactive Google Colab notebook for GPU reproduction
-├── scenarios_case_studies.json    # Detailed forensic test cases (Caught, Missed, False Alarm)
-├── .gitignore                     # Machine learning artifact and secret exclusion rules
-└── artifacts/
-    ├── metrics_lora_holdout.json  # Calibrated holdout telemetry for Candidate 1 (LoRA)
-    ├── metrics_qlora_holdout.json # Calibrated holdout telemetry for Candidate 2 (QLoRA)
-    └── metrics_xgb_holdout.json   # Benchmark holdout telemetry for Production Baseline (XGBoost)
+├── sentinel/                      # Core production implementation package
+│   ├── __init__.py                # Reason codes and label definitions
+│   ├── model.py                   # Qwen2.5-0.5B + LoRA / QLoRA PEFT model setup
+│   ├── train.py                   # HuggingFace training loop & multi-task loss
+│   ├── evaluate.py                # Platt calibration & holdout evaluation engine
+│   ├── infer.py                   # SentinelScorer real-time scoring engine
+│   └── data.py                    # Dataset loading & fmt-v1 prompt builder
+├── hyperstack/                    # VM management & execution scripts
+│   ├── setup_vm.sh                # System dependencies & CUDA environment setup
+│   ├── check.sh                   # Automated pre-flight health diagnostic check
+│   ├── train.sh                   # Training runner (supports --qlora)
+│   └── serve.sh                   # HTTP scoring gateway runner
+├── xgboost_benchmark/             # Production tabular baseline
+│   ├── train.py                   # XGBoost GPU training loop
+│   ├── features.py                # 25-feature tabular vectorizer
+│   └── artifacts/                 # Serialized baseline model artifacts
+├── artifacts/                     # Verified holdout telemetry & curves
+│   ├── metrics_lora_holdout.json  # Candidate A holdout telemetry
+│   ├── metrics_qlora_holdout.json # Candidate B holdout telemetry
+│   └── metrics_xgb_holdout.json   # Baseline holdout telemetry
+├── tests/                         # Automated test suite
+│   ├── test_metrics.py            # Calibration & classification metric tests
+│   ├── test_infer_logic.py        # Real-time scoring logic tests
+│   ├── test_data.py               # Prompt formatting & vectorization tests
+│   └── test_run_evaluation.py    # Acceptance gate & failure detection tests
+├── run_evaluation.py              # CLI benchmark engine & dynamic acceptance gate
+├── sentinel_finetuning_colab.ipynb # Interactive GPU reproduction notebook (nbformat 4)
+├── scenarios_case_studies.json    # Forensic qualitative test cases
+├── requirements.txt               # Pinned production dependencies
+├── pytest.ini                     # Test configuration
+└── .gitignore                     # Model weights & credentials exclusion rules
 ```
 
 ---
 
 ## Quickstart & Replication
 
-### Option A: Run the Standalone Evaluation CLI
-You can inspect the complete evaluation tables, decision matrix, and forensic case studies in your terminal using standard Python (no GPU required):
-
+### 1. Pre-Flight Health Check
 ```bash
-python run_evaluation.py
+bash hyperstack/check.sh
 ```
 
-### Option B: Interactive Cloud Reproduction (Google Colab / Kaggle)
-Open the included Jupyter notebook [**`sentinel_finetuning_colab.ipynb`**](sentinel_finetuning_colab.ipynb) in Google Colab (select a free T4 GPU runtime) to run data integrity checks, execute LoRA/QLoRA training loops, and reproduce the out-of-time holdout evaluation.
+### 2. Fine-Tune Full LoRA (Candidate A)
+```bash
+python -m sentinel.train --tag hyperstack --method lora --epochs 2.0 --batch-size 16 --lr 2e-4
+```
+
+### 3. Fine-Tune 4-Bit QLoRA (Candidate B)
+```bash
+python -m sentinel.train --tag hyperstack --method qlora --epochs 2.0 --batch-size 16 --lr 2e-4
+```
+
+### 4. Run Holdout Evaluation & Production Gate
+```bash
+# Standard evaluation and dynamic production acceptance matrix
+python run_evaluation.py
+
+# Verify fail-closed gate behavior
+python run_evaluation.py --fail-test
+
+# Demonstrate live inference pipeline & Platt calibration
+python run_evaluation.py --demo-live
+
+# View actionable next-training experiment and compute economics
+python run_evaluation.py --next-experiment
+```
+
+### 5. Run Automated Test Suite
+```bash
+pytest -m "not smoke"
+```
