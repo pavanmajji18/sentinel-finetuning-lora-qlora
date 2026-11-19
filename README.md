@@ -87,10 +87,12 @@ In deep learning training telemetry, an epoch represents one complete pass throu
 $$\text{Epoch Progress} = \frac{\text{Completed Optimizer Steps} \times \text{Batch Size}}{\text{Total Training Samples}}$$
 When early stopping activates or training terminates after a fixed step budget right before processing the final micro-batch of the 2nd epoch (e.g., step 279 out of 280), the exact fraction of processed data records is **1.99 epochs**.
 
-### 4. Early Stopping Mechanics
+### 4. Early Stopping & Trainer Validation Configuration
 Fraud patterns are dynamic and non-stationary. Excessive training epochs cause the model to memorize transient cardholder IDs, IP addresses, or device signatures:
-- An `EarlyStoppingCallback` continuously tracks validation loss (`metrics_validation.json`) and PR-AUC at fixed evaluation intervals (every 50 steps).
-- If validation loss fails to improve for a patience window of 3 consecutive evaluation cycles, training halts automatically to safeguard model generalization.
+- **Periodic Validation:** Configured in `sentinel/train.py` via `TrainingArguments(eval_strategy="steps", eval_steps=50, save_strategy="steps", save_steps=50, save_total_limit=2)`.
+- **Early Stopping Callback:** Uses `EarlyStoppingCallback(early_stopping_patience=3)` with `load_best_model_at_end=True` and `metric_for_best_model="loss"`.
+- If validation loss plateaus or increases for 3 consecutive evaluation checks (150 steps), training halts early and reloads the checkpoint with the lowest validation loss to safeguard model generalization.
+- When training runs on fixed-budget regimes (e.g. 2.0 epochs / 280 steps), progress terminating just before the final micro-batch evaluates to decimal epoch **1.99**.
 
 ---
 

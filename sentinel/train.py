@@ -112,6 +112,12 @@ def parse_args(argv=None):
     p.add_argument("--max-eval-rows", type=int, default=20000,
                    help="Stratified cap for validation/holdout scoring (0 = all)")
     p.add_argument("--eval-batch-size", type=int, default=32)
+    p.add_argument("--eval-steps", type=int, default=50,
+                   help="Run evaluation and checkpoint every N steps (default: 50)")
+    p.add_argument("--early-stopping", action=argparse.BooleanOptionalAction, default=True,
+                   help="Enable early stopping on validation loss (default: True)")
+    p.add_argument("--early-stopping-patience", type=int, default=3,
+                   help="Number of eval checks with no improvement before early stopping (default: 3)")
     p.add_argument("--skip-holdout", action="store_true")
     p.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True,
                    help="Recompute activations: ~6x less GPU memory, ~30%% slower (default on)")
@@ -153,19 +159,30 @@ def run(a) -> Path:
     model, tok = build_model(a.base_model, a.method, a.lora_r, a.lora_alpha, a.lora_dropout,
                              a.gradient_checkpointing)
     bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+
+    val_dataset = SFTRows(val_rows, tok, a.max_length) if val_rows else None
+    use_eval = bool(a.early_stopping and val_dataset is not None and len(val_rows) > 0 and (a.max_steps <= 0 or a.max_steps >= a.eval_steps))
+
     args = TrainingArguments(
         output_dir=str(run_dir / "checkpoints"),
         num_train_epochs=a.epochs,
         max_steps=a.max_steps,
         per_device_train_batch_size=a.batch_size,
+        per_device_eval_batch_size=a.eval_batch_size,
         gradient_accumulation_steps=a.grad_accum,
         learning_rate=a.lr,
         lr_scheduler_type="cosine",
         warmup_ratio=a.warmup_ratio,
         weight_decay=0.0,
         logging_steps=10,
-        save_strategy="no",
-        eval_strategy="no",
+        eval_strategy="steps" if use_eval else "no",
+        eval_steps=a.eval_steps if use_eval else None,
+        save_strategy="steps" if use_eval else "no",
+        save_steps=a.eval_steps if use_eval else None,
+        save_total_limit=2 if use_eval else None,
+        load_best_model_at_end=True if use_eval else False,
+        metric_for_best_model="loss" if use_eval else None,
+        greater_is_better=False if use_eval else None,
         report_to="none",
         bf16=bf16,
         fp16=torch.cuda.is_available() and not bf16,
@@ -175,10 +192,18 @@ def run(a) -> Path:
         dataloader_num_workers=0,
         seed=a.seed,
     )
+
+    callbacks = []
+    if use_eval:
+        from transformers import EarlyStoppingCallback
+        callbacks.append(EarlyStoppingCallback(early_stopping_patience=a.early_stopping_patience))
+
     trainer = make_trainer_cls()(
         model=model, args=args,
         train_dataset=SFTRows(train_rows, tok, a.max_length),
+        eval_dataset=val_dataset if use_eval else None,
         data_collator=Collator(tok.pad_token_id),
+        callbacks=callbacks,
         pos_weight=a.pos_weight, reason_weight=a.reason_weight,
     )
     t0 = time.time()

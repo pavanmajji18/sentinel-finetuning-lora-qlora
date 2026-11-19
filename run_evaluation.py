@@ -469,9 +469,15 @@ def main() -> None:
     # 5. Production Recommendation & Compute Economics Summary
     print("\n### 5. Production Recommendation & Next Improvement")
     print("-" * 95)
-    print("Recommendation: Ship LoRA (BF16).")
-    print("  LoRA delivers superior PR-AUC (0.8312 vs 0.8145) and catches 3 additional fraud cases")
-    print("  (86.3% vs 82.2% recall) while maintaining identical 7.5 MB artifact footprints and serving latencies.")
+    uplift_lora_qlora = m_l["pr_auc"] - m_q["pr_auc"]
+    lora_caught = int(round(m_l["at_review"]["recall"] * fraud_rows))
+    qlora_caught = int(round(m_q["at_review"]["recall"] * fraud_rows))
+    caught_diff = lora_caught - qlora_caught
+    print("Recommendation: Ship Candidate A (LoRA BF16) for Production.")
+    print(f"  LoRA delivers superior PR-AUC ({m_l['pr_auc']:.4f} vs {m_q['pr_auc']:.4f}, uplift: +{uplift_lora_qlora:.4f}),")
+    print(f"  catches {caught_diff} additional holdout fraud cases at REVIEW ({l_rec_rev} vs {q_rec_rev} recall, {lora_caught} vs {qlora_caught} of {fraud_rows}),")
+    print(f"  achieves higher BLOCK precision ({l_prec_blk} vs {q_prec_blk}), faster latency ({lora_p99_str} vs {qlora_p99_str}),")
+    print(f"  and requires an identical adapter storage footprint ({lora_adapter_str}).")
     print("Next Experiment: Run Asymmetric Loss Weighting (pos_weight=2.5) to capture subtle fraud.")
     print("Run `python run_evaluation.py --next-experiment` for full experimental protocol and compute budget.")
     print("=" * 95)
