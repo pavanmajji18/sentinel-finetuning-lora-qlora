@@ -1,0 +1,147 @@
+[
+  {
+    "id": "CASE_01_FRAUD_CAUGHT",
+    "case_type": "True Positive (Fraud Caught)",
+    "description": "3:14 AM high-value electronics purchase from an unrecognized device in a distant city following 4 authentication failures.",
+    "ground_truth": {
+      "fraud_label": 1,
+      "fraud_type": "Account Takeover (ATO) / Credential Stuffing"
+    },
+    "transaction": {
+      "transaction_id": "TX_HO_008412",
+      "amount": 74999.0,
+      "mcc": "electronics",
+      "channel": "card",
+      "hour": 3,
+      "weekday": "Sun",
+      "customer_age": 24,
+      "account_age_days": 420,
+      "avg_90d": 1800.0,
+      "txns_30d": 6,
+      "fails_24h": 4,
+      "new_device": true,
+      "city": "Patna",
+      "merchant_city": "Mumbai",
+      "new_city": true,
+      "dist_km": "1000+",
+      "amt_ratio": 41.67,
+      "txns_1h": 3,
+      "amount_24h": 12000.0,
+      "device_users_7d": 2,
+      "history": [
+        {"days_ago": 0, "channel": "card", "amount": 9000.0, "mcc": "gift_cards", "city": "Patna"},
+        {"days_ago": 0, "channel": "card", "amount": 3000.0, "mcc": "electronics", "city": "Patna"},
+        {"days_ago": 9, "channel": "UPI", "amount": 1200.0, "mcc": "grocery", "city": "Lucknow"}
+      ]
+    },
+    "prompt": "[TXN] id=TX_HO_008412 amt=74999.0 mcc=electronics channel=card time=03h Sun\n[CUST] age=24 acct_age_days=420 avg_90d=1800.00 txns_30d=6 fails_24h=4\n[CTX] new_device=yes city=Patna merchant_city=Mumbai new_city=yes dist_km=1000+ amt_ratio=41.7 txns_1h=3 amount_24h=12000.00 device_users_7d=2\n[HIST] -0d:card 9000.0 gift_cards Patna | -0d:card 3000.0 electronics Patna | -9d:UPI 1200.0 grocery Lucknow\n[TASK] Assess fraud risk using only the observed context.",
+    "model_evaluation": {
+      "decision": "BLOCK",
+      "fraud_probability": 0.8924,
+      "confidence": 0.8924,
+      "reason_codes": [
+        "R01_NEW_DEVICE",
+        "R02_GEO_MISMATCH",
+        "R03_ODD_HOUR",
+        "R04_FAILED_ATTEMPTS",
+        "R05_AMOUNT_SPIKE"
+      ],
+      "explanation": "Blocked: new device, location differs from merchant/home city, unusual hour, recent failed attempts, amount far above the customer's average.",
+      "reasoning_critique": "EXCELLENT DOMAIN RATIONALE: The model synthesised the acute risk cluster of a 3 AM transaction on a newly provisioned device following 4 PIN/OTP failures, accompanied by an extreme 41.7x amount deviation and high-risk gift-card velocity in transaction history. Blocking immediately prevents irreversible financial loss."
+    }
+  },
+  {
+    "id": "CASE_02_FRAUD_MISSED",
+    "case_type": "False Negative (Fraud Missed)",
+    "description": "Subtle low-value UPI quick-commerce transaction executed during normal daylight hours from a known device with no authentication failures.",
+    "ground_truth": {
+      "fraud_label": 1,
+      "fraud_type": "Friendly Fraud / Micro-Testing Precursor"
+    },
+    "transaction": {
+      "transaction_id": "TX_HO_011924",
+      "amount": 420.0,
+      "mcc": "quick_commerce",
+      "channel": "UPI",
+      "hour": 14,
+      "weekday": "Wed",
+      "customer_age": 31,
+      "account_age_days": 850,
+      "avg_90d": 490.0,
+      "txns_30d": 28,
+      "fails_24h": 0,
+      "new_device": false,
+      "city": "Bengaluru",
+      "merchant_city": "Bengaluru",
+      "new_city": false,
+      "dist_km": "<5",
+      "amt_ratio": 0.86,
+      "txns_1h": 0,
+      "amount_24h": 350.0,
+      "device_users_7d": 1,
+      "history": [
+        {"days_ago": 1, "channel": "UPI", "amount": 350.0, "mcc": "quick_commerce", "city": "Bengaluru"},
+        {"days_ago": 3, "channel": "UPI", "amount": 620.0, "mcc": "food", "city": "Bengaluru"},
+        {"days_ago": 7, "channel": "UPI", "amount": 1200.0, "mcc": "grocery", "city": "Bengaluru"}
+      ]
+    },
+    "prompt": "[TXN] id=TX_HO_011924 amt=420.0 mcc=quick_commerce channel=UPI time=14h Wed\n[CUST] age=31 acct_age_days=850 avg_90d=490.00 txns_30d=28 fails_24h=0\n[CTX] new_device=no city=Bengaluru merchant_city=Bengaluru new_city=no dist_km=<5 amt_ratio=0.9 txns_1h=0 amount_24h=350.00 device_users_7d=1\n[HIST] -1d:UPI 350.0 quick_commerce Bengaluru | -3d:UPI 620.0 food Bengaluru | -7d:UPI 1200.0 grocery Bengaluru\n[TASK] Assess fraud risk using only the observed context.",
+    "model_evaluation": {
+      "decision": "ALLOW",
+      "fraud_probability": 0.0018,
+      "confidence": 0.9982,
+      "reason_codes": [],
+      "explanation": "No strong risk signals observed.",
+      "reasoning_critique": "EXPECTED LIMITATION OF PURE CONTEXTUAL SCORING: The transaction mimicked the cardholder's exact historical baseline (same device, location, average ticket size, and merchant category). Without biometric anomalies, session replay signals, or post-transaction dispute reporting, zero risk indicators were observable in telemetry. This highlights why low-ticket micro-testing requires downstream velocity graphs."
+    }
+  },
+  {
+    "id": "CASE_03_FALSE_ALARM",
+    "case_type": "False Positive (False Alarm)",
+    "description": "Legitimate urgent emergency flight booking by an established premium customer from a new mobile device while travelling.",
+    "ground_truth": {
+      "fraud_label": 0,
+      "fraud_type": "Genuine Transaction (Urgent Travel Booking)"
+    },
+    "transaction": {
+      "transaction_id": "TX_HO_005230",
+      "amount": 48500.0,
+      "mcc": "travel",
+      "channel": "card",
+      "hour": 23,
+      "weekday": "Fri",
+      "customer_age": 48,
+      "account_age_days": 2100,
+      "avg_90d": 6200.0,
+      "txns_30d": 12,
+      "fails_24h": 1,
+      "new_device": true,
+      "city": "Jaipur",
+      "merchant_city": "Mumbai",
+      "new_city": true,
+      "dist_km": "500-1000",
+      "amt_ratio": 7.82,
+      "txns_1h": 1,
+      "amount_24h": 0.0,
+      "device_users_7d": 1,
+      "history": [
+        {"days_ago": 15, "channel": "card", "amount": 32000.0, "mcc": "travel", "city": "Delhi"},
+        {"days_ago": 45, "channel": "card", "amount": 18500.0, "mcc": "travel", "city": "Mumbai"},
+        {"days_ago": 60, "channel": "UPI", "amount": 1400.0, "mcc": "food", "city": "Delhi"}
+      ]
+    },
+    "prompt": "[TXN] id=TX_HO_005230 amt=48500.0 mcc=travel channel=card time=23h Fri\n[CUST] age=48 acct_age_days=2100 avg_90d=6200.00 txns_30d=12 fails_24h=1\n[CTX] new_device=yes city=Jaipur merchant_city=Mumbai new_city=yes dist_km=500-1000 amt_ratio=7.8 txns_1h=1 amount_24h=0.00 device_users_7d=1\n[HIST] -15d:card 32000.0 travel Delhi | -45d:card 18500.0 travel Mumbai | -60d:UPI 1400.0 food Delhi\n[TASK] Assess fraud risk using only the observed context.",
+    "model_evaluation": {
+      "decision": "REVIEW",
+      "fraud_probability": 0.2845,
+      "confidence": 0.7155,
+      "reason_codes": [
+        "R01_NEW_DEVICE",
+        "R02_GEO_MISMATCH",
+        "R05_AMOUNT_SPIKE"
+      ],
+      "explanation": "Sent to review: new device, location differs from merchant/home city, amount far above the customer's average.",
+      "reasoning_critique": "SENSIBLE SAFEGUARD ROUTING: Although the customer was genuine, the combination of a brand-new device, geographic leap to Jaipur, and ticket size 7.8x above the 90-day average accurately elevates risk above the 0.142 REVIEW threshold. Routing to step-up authentication (3D Secure / OTP) protects against account takeover without hard-blocking a legitimate loyal customer."
+    }
+  }
+]

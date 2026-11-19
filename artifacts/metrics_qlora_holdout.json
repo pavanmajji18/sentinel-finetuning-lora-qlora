@@ -1,0 +1,45 @@
+{
+  "split": "holdout",
+  "model": "Qwen/Qwen2.5-0.5B-Instruct + QLORA",
+  "method": "qlora",
+  "base_model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "calibrated": {
+    "rows": 13889,
+    "fraud_rows": 73,
+    "pr_auc": 0.8215,
+    "roc_auc": 0.9882,
+    "ece": 0.00138,
+    "at_review": {
+      "threshold": 0.1512,
+      "flagged": 186,
+      "precision": 0.3387,
+      "recall": 0.8630,
+      "false_positive_rate": 0.00890
+    },
+    "at_block": {
+      "threshold": 0.7104,
+      "flagged": 24,
+      "precision": 0.7083,
+      "recall": 0.2329,
+      "false_positive_rate": 0.00051
+    }
+  },
+  "training_telemetry": {
+    "device": "NVIDIA L40 (48GB)",
+    "training_time_seconds": 512.6,
+    "peak_vram_gib": 1.62,
+    "loss_start": 0.8650,
+    "loss_mid": 0.2720,
+    "loss_end": 0.1268,
+    "final_epoch": 1.99,
+    "adapter_size_mb": 32.4,
+    "trainable_parameters": 8008,
+    "total_parameters": 494032008,
+    "trainable_percent": 0.0016
+  },
+  "latency": {
+    "p50_ms": 42.1,
+    "p95_ms": 84.7,
+    "p99_ms": 112.0
+  }
+}
